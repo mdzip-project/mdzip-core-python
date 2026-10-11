@@ -1,0 +1,3 @@
+# Spec fixtures are checked by SHA-256 (SPEC-FIXTURES.json); never convert line endings.
+tests/fixtures/** -text
+*.mdz binary

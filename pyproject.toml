@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdzip-core"
+description = "Read and write MDZip (.mdz) archives: Markdown documents and their assets in one file."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+dependencies = []
+dynamic = ["version"]
+keywords = ["mdzip", "mdz", "markdown", "archive", "zip"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Text Processing :: Markup :: Markdown",
+  "Topic :: System :: Archiving",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://mdzip.org"
+Specification = "https://github.com/mdzip-project/mdzip-spec"
+Source = "https://github.com/mdzip-project/mdzip-core-python"
+
+[tool.setuptools.dynamic]
+version = { attr = "mdzip._version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+mdzip = ["py.typed"]
