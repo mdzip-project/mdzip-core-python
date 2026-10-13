@@ -8,11 +8,10 @@ import os
 import stat
 import zipfile
 from dataclasses import dataclass, field
-from typing import IO, Dict, List, Optional, Union
+from typing import IO, Dict, List, Optional, Tuple, Union
 
 from .entrypoint import resolve_entry_point
 from .errors import (
-    ERR_DUPLICATE_PATH,
     ERR_LIMIT_EXCEEDED,
     ERR_MANIFEST_INVALID,
     ERR_NOT_FOUND,
@@ -21,10 +20,12 @@ from .errors import (
     MdzError,
 )
 from .links import ArchiveSource, FilesystemHost, LinkHost, LinkTarget, resolve_link
-from .manifest import Manifest, check_spec_version, manifest_mode, parse_manifest
-from .paths import find_path, is_markdown, nfc, path_error
+from .manifest import Manifest, manifest_mode, parse_manifest_with_duplicates, validate_manifest
+from .paths import entry_set_error, find_path, is_markdown, normalize_entry_point, path_error
 
 MANIFEST_NAME = "manifest.json"
+_COMPRESSION_METHODS = (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+"""Section 4: entries use method 0 or 8."""
 
 Source = Union[str, os.PathLike, bytes, bytearray, IO[bytes]]
 
@@ -92,30 +93,39 @@ class MdzArchive:
             raise MdzError(ERR_ZIP_INVALID, f"not a valid ZIP archive: {exc}") from exc
 
         self._infos: Dict[str, zipfile.ZipInfo] = {}
+        self._special: Dict[str, zipfile.ZipInfo] = {}
         self._directories: List[str] = []
-        seen: Dict[str, str] = {}
         total = 0
+        # zipfile reads names from the central directory, which wins over local headers (Section 4).
         infos = self._zip.infolist()
         if len(infos) > limits.max_entries:
             raise MdzError(ERR_LIMIT_EXCEEDED, f"archive has {len(infos)} entries (limit {limits.max_entries})")
-        for info in infos:
-            if info.flag_bits & 0x1:
-                raise MdzError(ERR_ZIP_ENCRYPTED, f"entry '{info.filename}' is encrypted")
-            name = _repair_name(info)
-            if name.endswith("/"):
-                self._directories.append(name)
-                continue
+        names = [_repair_name(info) for info in infos]
+        for name in names:
             error = path_error(name)
             if error:
                 raise error
-            if _is_symlink(info):
-                self.warnings.append(Diagnostic("warning", "ERR_PATH_INVALID", f"symbolic link '{name}' ignored"))
+        # Duplicates and file/directory conflicts are rejected, never resolved by picking one (Section 13.1).
+        conflict = entry_set_error(names)
+        if conflict:
+            raise conflict
+        for info, name in zip(infos, names):
+            if info.flag_bits & 0x1:
+                raise MdzError(ERR_ZIP_ENCRYPTED, f"entry '{info.filename}' is encrypted")
+            if name.endswith("/"):
+                self._directories.append(name)
                 continue
-            key = nfc(name)
-            if key in seen:
-                raise MdzError(ERR_DUPLICATE_PATH, f"'{name}' and '{seen[key]}' are the same path (Section 5.4)")
-            seen[key] = name
+            if info.compress_type not in _COMPRESSION_METHODS:
+                raise MdzError(ERR_ZIP_INVALID, f"entry '{name}' uses compression method {info.compress_type}; MDZip allows 0 (stored) and 8 (DEFLATE)")
             self._check_declared_size(name, info)
+            if _is_symlink(info):
+                # Never followed or read as content (Section 13.1). Kept so an update doesn't drop it
+                # silently (Section 14.1); the archive stays non-conforming (Section 4) until it's removed.
+                self._special[name] = info
+                self.warnings.append(
+                    Diagnostic("warning", "ERR_PATH_INVALID", f"symbolic link '{name}' ignored; an update keeps it unless asked to drop it (Sections 4, 13.1)")
+                )
+                continue
             total += info.file_size
             if total > limits.max_total_uncompressed:
                 raise MdzError(ERR_LIMIT_EXCEEDED, f"total uncompressed size exceeds {limits.max_total_uncompressed} bytes")
@@ -124,9 +134,20 @@ class MdzArchive:
         self.manifest: Optional[Manifest] = None
         """The parsed manifest.json (a plain dict, all fields kept), or None."""
         manifest_name = find_path(self._infos, MANIFEST_NAME)
+        self.ignored_fields: List[str] = []
+        """Descriptive manifest fields with a wrong type or value, ignored (Section 6.4)."""
         if manifest_name is not None:
-            self.manifest = parse_manifest(self.read_bytes(manifest_name))
-            check_spec_version(self.manifest)
+            self.manifest, duplicates = parse_manifest_with_duplicates(self.read_bytes(manifest_name))
+            for member in duplicates:
+                self.warnings.append(
+                    Diagnostic("warning", "WARN_DUPLICATE_MEMBER", f"manifest.json repeats member '{member}'; the last one is used (Section 6.4)")
+                )
+            # entryPoint is checked when the entry point is resolved, so the rest of the archive stays readable.
+            self.ignored_fields = validate_manifest(self.manifest, entry_point=False)
+            for name in self.ignored_fields:
+                self.warnings.append(
+                    Diagnostic("warning", "WARN_FIELD_IGNORED", f"manifest field '{name}' has the wrong type or an invalid value and is ignored (Section 6.4)")
+                )
         self.mode = manifest_mode(self.manifest)
         """'document' or 'project' (Section 5.7)."""
 
@@ -175,6 +196,23 @@ class MdzArchive:
     def files(self) -> List[str]:
         """File entry paths (no directories), as stored."""
         return list(self._infos)
+
+    @property
+    def special_files(self) -> List[str]:
+        """Symbolic link entries, as stored. Not in ``files``, never followed or read (Section 13.1)."""
+        return list(self._special)
+
+    def _special_entry(self, path: str) -> Optional[Tuple[str, zipfile.ZipInfo, bytes]]:
+        """A symbolic link entry's stored name, ZIP metadata and raw bytes, for copying it unchanged."""
+        name = find_path(self._special, path)
+        if name is None:
+            return None
+        info = self._special[name]
+        with self._zip.open(info) as f:
+            data = f.read(min(self.limits.max_entry_uncompressed, max(info.file_size, 0)) + 1)
+        if len(data) > info.file_size:
+            raise MdzError(ERR_LIMIT_EXCEEDED, f"'{name}' decompresses to more than its declared size")
+        return name, info, data
 
     @property
     def documents(self) -> List[str]:
@@ -227,7 +265,7 @@ class MdzArchive:
 
     # ---- Links ----
 
-    def resolve_link(self, document: str, link: str, host: Optional[LinkHost] = None) -> LinkTarget:
+    def resolve_link(self, document: str, link: str, host: Optional[LinkHost] = None, use: str = "navigate") -> LinkTarget:
         """Resolve ``link`` written in ``document`` of this archive (Sections 9.3–9.5).
 
         Without ``host``: if the archive was opened from a file, links may
@@ -239,7 +277,7 @@ class MdzArchive:
             host = _DefaultHost(self)
         name = os.path.basename(self.path) if self.path else "archive.mdz"
         archive_path = getattr(host, "archive_path", name)
-        return resolve_link(ArchiveSource(archive_path, document), link, host)
+        return resolve_link(ArchiveSource(archive_path, document), link, host, use)
 
     # ---- Validation ----
 
@@ -264,11 +302,9 @@ class MdzArchive:
                 found.append(Diagnostic("warning", ERR_MANIFEST_INVALID, "manifest has no spec.version (required in producer-written manifests)"))
             if "entryPoint" not in self.manifest:
                 found.append(Diagnostic("warning", ERR_MANIFEST_INVALID, "manifest has no entryPoint (required in producer-written manifests)"))
-            title = self.manifest.get("title")
-            if title is not None and (not isinstance(title, str) or title == ""):
-                found.append(Diagnostic("warning", ERR_MANIFEST_INVALID, "title must be a non-empty string"))
+            # Invalid descriptive fields (title, cover, ...) are already in self.warnings.
             cover = self.manifest.get("cover")
-            if isinstance(cover, str) and self.find(cover) is None:
+            if "cover" not in self.ignored_fields and isinstance(cover, str) and self.find(normalize_entry_point(cover)) is None:
                 found.append(Diagnostic("warning", "WARN_COVER_MISSING", f"cover '{cover}' is not in the archive"))
         return found
 

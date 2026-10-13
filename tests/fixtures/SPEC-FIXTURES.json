@@ -5,15 +5,17 @@
   "note": "Copied by mdzip-spec tools/sync-fixtures.mjs. Do not edit these files by hand; add implementation-specific cases in separate files.",
   "files": {
     "create-filter-cases.json": "cdf9a9cb17e9c8094d47aa4b49e9f1f78b58340aa2ff53fb06f02120be8b75f5",
+    "entry-set-cases.json": "7861ca72aa6f6d6197da052e7cf0511fe3301cfedd4c333dc551d6996df03c93",
     "entrypoint-cases.json": "29437c12efbd934cfbbb3031156a975806f8d82fd6fbde10ae381d72d82dd4cd",
     "invalid-bad-entrypoint.mdz": "6ed99f65eeb53afe1d2f7ac73cf45562eefc238d7ab111aef14337594e60ad22",
     "invalid-missing-index.mdz": "5eff67350b6aa92777001e33f6c70bd6a74b58c615dcdf67b0265b90ccd2588f",
     "line-endings-crlf.mdz": "20fce978e1c09ff3e6966b47f0c6d9acd3063591217abb6b35c2794e5211caa3",
-    "link-resolution-cases.json": "bfa4e822c597303c270a753c5a1762cf9b5a73462292c91cdc65f4de6617cf74",
+    "link-resolution-cases.json": "9be669aefb3b5ac82a4a8641f128c394034e82958571ccdeb47e0aa3144e0cc2",
+    "manifest-cases.json": "a7c4ff09c0541e950f09b744d50bec3160b92168af8191cc5e62f300c2132f69",
     "minimal.mdz": "e22527d1f2b4e0da69e099d9577fde67627fb24998bc14519e25ced3fad7af79",
     "path-matching-cases.json": "25724955a0d375e9e545fbe56bb3626d96a1852f84deb62e5a02115ba6250a17",
-    "path-validation-cases.json": "c44af6bc1db71a1e3bfb283d359d02922d59277ae81dc4c57ccca631e77f6b79",
-    "round-trip-expectations.json": "d914797ac48297fbd0c1e634056b6d0b7a2ec0f4ef729b032671498cf1ab68ae",
+    "path-validation-cases.json": "0f11968d6ccfda1e6b8263421178d96a297f51c3a58250851690aea0c7289133",
+    "round-trip-expectations.json": "1435607c7956bac5ddab2ecc1334301f32c9d64bcfcca1cb00a6ea5e26aab7d5",
     "round-trip.mdz": "b8165e0417ebf4dbbf0215c541f9101866210c61714a287a553d843cde6a80fc",
     "with-manifest.mdz": "95f1959bfae54213081467f660d4934535e493d0f428698b0603f4aacb219447"
   }

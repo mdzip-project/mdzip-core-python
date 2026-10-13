@@ -20,6 +20,8 @@ ERR_PATH_TRAVERSAL = "ERR_PATH_TRAVERSAL"
 ERR_PATH_RESERVED_CHAR = "ERR_PATH_RESERVED_CHAR"
 ERR_PATH_CONTROL_CHAR = "ERR_PATH_CONTROL_CHAR"
 ERR_DUPLICATE_PATH = "ERR_DUPLICATE_PATH"
+ERR_PATH_CONFLICT = "ERR_PATH_CONFLICT"
+"""A file's path is also the directory of another entry, such as ``docs`` and ``docs/intro.md``."""
 
 # Manifest and entry point (Sections 5.5, 6, 11)
 ERR_MANIFEST_INVALID = "ERR_MANIFEST_INVALID"

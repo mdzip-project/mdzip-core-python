@@ -3,14 +3,14 @@
 Implements the MDZip specification 1.2.0 (https://github.com/mdzip-project/mdzip-spec)
 with only the Python standard library.
 
-    import mdzip
+    import mdzip_core
 
-    with mdzip.open("guide.mdz") as archive:
+    with mdzip_core.open("guide.mdz") as archive:
         print(archive.entry_point, archive.title)
         text = archive.read_text(archive.entry_point)
 
-    data = mdzip.create({"index.md": "# Hello\\n"}, title="Hello")
-    data = mdzip.update(data, write={"images/logo.png": png_bytes})
+    data = mdzip_core.create({"index.md": "# Hello\\n"}, title="Hello")
+    data = mdzip_core.update(data, write={"images/logo.png": png_bytes})
 """
 
 from ._version import __version__

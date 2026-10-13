@@ -28,10 +28,10 @@ Specification = "https://github.com/mdzip-project/mdzip-spec"
 Source = "https://github.com/mdzip-project/mdzip-core-python"
 
 [tool.setuptools.dynamic]
-version = { attr = "mdzip._version.__version__" }
+version = { attr = "mdzip_core._version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-mdzip = ["py.typed"]
+mdzip_core = ["py.typed"]

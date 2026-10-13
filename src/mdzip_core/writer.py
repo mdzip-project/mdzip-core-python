@@ -13,10 +13,10 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple, Unio
 from ._version import __version__
 from .archive import DEFAULT_LIMITS, MANIFEST_NAME, Limits, MdzArchive, Source
 from .entrypoint import resolve_entry_point, try_resolve_entry_point
-from .errors import ERR_DUPLICATE_PATH, ERR_ENTRYPOINT_CHANGED, ERR_ENTRYPOINT_INVALID, ERR_ENTRYPOINT_MISSING, MdzError
+from .errors import ERR_DUPLICATE_PATH, ERR_PATH_INVALID, ERR_ENTRYPOINT_CHANGED, ERR_ENTRYPOINT_INVALID, ERR_ENTRYPOINT_MISSING, MdzError
 from .filters import DEFAULT_FILTERS, matches_filters
 from .manifest import MODES, SPEC_NAME, SPEC_VERSION, Manifest, parse_manifest, serialize_manifest, set_modified
-from .paths import entry_point_error, find_path, is_markdown, nfc, normalize_entry_point, validate_path
+from .paths import entry_point_error, entry_set_error, find_path, is_markdown, nfc, normalize_entry_point, validate_path
 
 Content = Union[bytes, str]
 
@@ -26,17 +26,19 @@ PRODUCER_CORE = {
     "url": "https://github.com/mdzip-project/mdzip-core-python",
 }
 
-_TEXT_EXTENSIONS = (".md", ".markdown", ".json", ".txt", ".csv", ".html", ".htm", ".css", ".svg", ".xml", ".yml", ".yaml")
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _gets_lf(path: str) -> bool:
+    """Markdown files and the manifest get LF line endings; other files keep theirs (Section 12.2)."""
+    return is_markdown(path) or path.lower() == MANIFEST_NAME
+
+
 def _to_bytes(path: str, content: Content, normalize_line_endings: bool) -> bytes:
-    """Content as bytes; text files get LF line endings (Section 4) when asked."""
+    """Content as bytes, with LF line endings in Markdown files when asked."""
     data = content.encode("utf-8") if isinstance(content, str) else bytes(content)
-    if normalize_line_endings and path.lower().endswith(_TEXT_EXTENSIONS):
+    if normalize_line_endings and _gets_lf(path):
         data = data.replace(b"\r\n", b"\n")
     return data
 
@@ -59,6 +61,11 @@ def _zip_info(path: str, when: Tuple[int, int, int, int, int, int], compress: bo
 
 
 def _write_zip(entries: Sequence[Tuple[zipfile.ZipInfo, bytes]]) -> bytes:
+    """Write entries as a ZIP. zipfile sets the UTF-8 flag for non-ASCII names and uses
+    ZIP64 only when a field would overflow (Section 4)."""
+    problem = entry_set_error(info.filename for info, _ in entries)
+    if problem:
+        raise problem
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         for info, data in entries:
@@ -72,6 +79,8 @@ def _normalized_files(files: Mapping[str, Content], normalize_line_endings: bool
     for raw, content in files.items():
         path = nfc(raw)  # archive paths, never OS paths: a backslash is invalid (Section 5.4)
         validate_path(path)
+        if path.endswith("/"):
+            raise MdzError(ERR_PATH_INVALID, f"'{raw}' ends in '/'; a file path can't name a directory")
         if path in out:
             raise MdzError(ERR_DUPLICATE_PATH, f"'{raw}' duplicates another path after NFC normalization")
         out[path] = _to_bytes(path, content, normalize_line_endings)
@@ -100,6 +109,9 @@ def create(
     The entry point is ``entry_point`` if given, else discovered from the
     files (Section 5.5). The title defaults to the entry point's first
     heading, then its file name.
+
+    With ``normalize_line_endings`` (the default), CRLF in Markdown files is
+    written as LF; other files are written exactly as given (Section 12.2).
     """
     contents = _normalized_files(files, normalize_line_endings)
     given = contents.pop(MANIFEST_NAME, None)
@@ -191,12 +203,21 @@ def update(
     entry_point: Optional[str] = None,
     when: Optional[datetime] = None,
     normalize_line_endings: bool = True,
+    drop_special_files: bool = False,
     limits: Limits = DEFAULT_LIMITS,
 ) -> bytes:
     """Modify an archive and return the new bytes (Section 14.1).
 
     - Entries not in ``write`` or ``remove`` are kept byte-for-byte, with
       their original timestamps and compression method.
+    - Symbolic link entries (``MdzArchive.special_files``) are kept the same
+      way, so the archive stays non-conforming (Section 4) and the warning
+      from opening it still applies. Pass ``drop_special_files=True``, or
+      name them in ``remove``, when the user agrees to remove them; writing
+      a file at the same path replaces the link with that file.
+    - Markdown files in ``write`` get LF line endings when
+      ``normalize_line_endings`` is set; other files are written as given
+      (Section 12.2).
     - The manifest is kept as a dict, so unknown fields survive; ``manifest``
       sets or replaces top-level fields (``None`` values delete them).
     - A manifest is added if the archive has none, with ``spec.version`` and
@@ -214,6 +235,9 @@ def update(
     for path in remove:
         stored = archive.find(path)
         if stored is None:
+            special = archive._special_entry(path)
+            stored = special[0] if special else None
+        if stored is None:
             raise MdzError("ERR_NOT_FOUND", f"'{path}' is not in the archive")
         removals.add(nfc(stored))
 
@@ -230,6 +254,13 @@ def update(
             replaced.add(key)
         else:
             entries.append((stored, info, archive.read_bytes(stored)))
+    kept_special = set()
+    if not drop_special_files:
+        for stored in archive.special_files:
+            key = nfc(stored)
+            if key not in removals and key not in writes:
+                entries.append(archive._special_entry(stored))
+                kept_special.add(stored)
     for path, data in writes.items():
         if path not in replaced:
             entries.append((path, None, data))
@@ -251,7 +282,7 @@ def update(
         new_manifest["entryPoint"] = entry_point
     set_modified(new_manifest, iso)
 
-    paths = [p for p, _, _ in entries]
+    paths = [p for p, _, _ in entries if p not in kept_special]  # links are never documents
     try:
         after = resolve_entry_point(paths, new_manifest)
     except MdzError as exc:

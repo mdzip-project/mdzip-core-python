@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import unittest
+import zipfile
 from pathlib import Path
 
-import mdzip
-from mdzip.errors import MdzError
-from mdzip.links import ArchiveSource, HostSource
-from mdzip.paths import find_path, path_error, same_path
+import mdzip_core
+from mdzip_core.errors import MdzError
+from mdzip_core.links import ArchiveSource, HostSource
+from mdzip_core.manifest import parse_manifest_with_duplicates, validate_manifest
+from mdzip_core.paths import entry_set_error, find_path, path_error, same_path
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -29,24 +32,24 @@ class MarkerTest(unittest.TestCase):
 
 class PrebuiltArchivesTest(unittest.TestCase):
     def test_minimal(self):
-        self.assertEqual(mdzip.open(FIXTURES / "minimal.mdz").entry_point, "index.md")
+        self.assertEqual(mdzip_core.open(FIXTURES / "minimal.mdz").entry_point, "index.md")
 
     def test_with_manifest(self):
-        archive = mdzip.open(FIXTURES / "with-manifest.mdz")
+        archive = mdzip_core.open(FIXTURES / "with-manifest.mdz")
         self.assertEqual(archive.entry_point, archive.manifest["entryPoint"])
 
     def test_missing_entry_point_target(self):  # T-003
         with self.assertRaises(MdzError) as ctx:
-            mdzip.open(FIXTURES / "invalid-missing-index.mdz").entry_point
+            mdzip_core.open(FIXTURES / "invalid-missing-index.mdz").entry_point
         self.assertEqual(ctx.exception.code, "ERR_ENTRYPOINT_MISSING")
 
     def test_bad_entry_point(self):  # T-004
         with self.assertRaises(MdzError) as ctx:
-            mdzip.open(FIXTURES / "invalid-bad-entrypoint.mdz").entry_point
+            mdzip_core.open(FIXTURES / "invalid-bad-entrypoint.mdz").entry_point
         self.assertEqual(ctx.exception.code, "ERR_ENTRYPOINT_MISSING")
 
     def test_crlf(self):  # T-005
-        archive = mdzip.open(FIXTURES / "line-endings-crlf.mdz")
+        archive = mdzip_core.open(FIXTURES / "line-endings-crlf.mdz")
         self.assertIn("\r\n", archive.read_text(archive.entry_point))
 
 
@@ -59,11 +62,11 @@ class EntryPointCasesTest(unittest.TestCase):
                 expected = case["expectedEntryPoint"]
                 if expected is None:
                     with self.assertRaises(MdzError) as ctx:
-                        mdzip.resolve_entry_point(files, manifest)
+                        mdzip_core.resolve_entry_point(files, manifest)
                     if "expectedError" in case:
                         self.assertEqual(ctx.exception.code, case["expectedError"])
                 else:
-                    self.assertEqual(mdzip.resolve_entry_point(files, manifest), expected)
+                    self.assertEqual(mdzip_core.resolve_entry_point(files, manifest), expected)
 
 
 class PathCasesTest(unittest.TestCase):
@@ -85,10 +88,60 @@ class PathCasesTest(unittest.TestCase):
     def test_create_filters(self):
         for case in load("create-filter-cases.json"):
             with self.subTest(case["name"]):
-                included = [p for p in case["inputPaths"] if mdzip.matches_filters(p, case["filters"])]
+                included = [p for p in case["inputPaths"] if mdzip_core.matches_filters(p, case["filters"])]
                 excluded = [p for p in case["inputPaths"] if p not in included]
                 self.assertEqual(sorted(included), sorted(case["expectedIncluded"]))
                 self.assertEqual(sorted(excluded), sorted(case["expectedExcluded"]))
+
+
+class EntrySetCasesTest(unittest.TestCase):  # T-013
+    def test_cases(self):
+        for case in load("entry-set-cases.json")["cases"]:
+            with self.subTest(case["name"]):
+                error = entry_set_error(case["entries"])
+                if case["valid"]:
+                    self.assertIsNone(error)
+                else:
+                    self.assertIsNotNone(error)
+                    self.assertEqual(error.code, case["errorCode"])
+
+    def test_archives_with_these_entries(self):
+        """The reader applies the same checks to real ZIP files."""
+        for case in load("entry-set-cases.json")["cases"]:
+            with self.subTest(case["name"]):
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w") as z:
+                    for name in case["entries"]:
+                        z.writestr(name, b"" if name.endswith("/") else b"# x\n")
+                    z.writestr("index.md" if "index.md" not in case["entries"] else "other.md", b"# i\n")
+                if case["valid"]:
+                    mdzip_core.open(buf.getvalue())
+                else:
+                    with self.assertRaises(MdzError) as caught:
+                        mdzip_core.open(buf.getvalue())
+                    self.assertEqual(caught.exception.code, case["errorCode"])
+
+
+class ManifestCasesTest(unittest.TestCase):  # T-012
+    def test_cases(self):
+        for case in load("manifest-cases.json")["cases"]:
+            expected = case["expected"]
+            with self.subTest(case["name"]):
+                data = case["manifestJson"].encode("utf-8")
+                if not expected["valid"]:
+                    with self.assertRaises(MdzError) as caught:
+                        validate_manifest(parse_manifest_with_duplicates(data)[0])
+                    self.assertEqual(caught.exception.code, expected["errorCode"])
+                    continue
+                manifest, duplicates = parse_manifest_with_duplicates(data)
+                ignored = validate_manifest(manifest)
+                self.assertEqual(sorted(ignored), sorted(expected.get("ignoredFields", [])))
+                self.assertEqual(bool(duplicates), expected.get("duplicateMembers", False))
+                for pointer, value in expected.get("values", {}).items():
+                    current = manifest
+                    for key in pointer.split("/")[1:]:
+                        current = current[key]
+                    self.assertEqual(current, value)
 
 
 class FixtureHost:
@@ -102,6 +155,9 @@ class FixtureHost:
         self.host_location = context.get("hostLocation", True)
         self.outside_links = context.get("outsideLinks", True)
         self.into_archive_links = context.get("intoArchiveLinks", True)
+        self.trust_root = context.get("trustRoot", model.get("trustRoot", ""))
+        self.allowed_paths = context.get("allowedPaths", [])
+        self.load_outside_resources = context.get("loadOutsideResources", False)
 
     def kind(self, path):
         if path in self.archives:
@@ -128,7 +184,8 @@ class LinkCasesTest(unittest.TestCase):
             with self.subTest(case["name"]):
                 src = case["from"]
                 source = ArchiveSource(src["archive"], src["path"]) if "archive" in src else HostSource(src["host"])
-                target = mdzip.resolve_link(source, case["link"], FixtureHost(fixture["host"], case.get("context")))
+                host = FixtureHost(fixture["host"], case.get("context"))
+                target = mdzip_core.resolve_link(source, case["link"], host, case.get("use", "navigate"))
                 self.assertEqual(target.as_dict(), case["expected"])
 
 
@@ -141,27 +198,32 @@ class RoundTripTest(unittest.TestCase):
 
     def flow(self, name, data, round_no):
         if name == "open and save without an edit":
-            return mdzip.update(data)
+            return mdzip_core.update(data)
         if name == "change a recognized manifest field":
-            return mdzip.update(data, manifest={"title": "Edited title"})
+            return mdzip_core.update(data, manifest={"title": "Edited title"})
         if name == "edit document content":
-            archive = mdzip.open(data)
-            return mdzip.update(data, write={"index.md": archive.read_text("index.md") + "\nEdited.\n"})
+            archive = mdzip_core.open(data)
+            return mdzip_core.update(data, write={"index.md": archive.read_text("index.md") + "\nEdited.\n"})
         if name == "add a resource":
-            return mdzip.update(data, write={f"images/added-{round_no}.png": b"\x89PNG"})
+            return mdzip_core.update(data, write={f"images/added-{round_no}.png": b"\x89PNG"})
         if name == "remove a recognized resource":
             if round_no == 1:
-                return mdzip.update(data, remove=["docs/guide.md"])
-            return mdzip.update(data, manifest={"title": "Second save"})
+                # Remove the file and its link, as a tool would (the flow lists index.md in changes).
+                archive = mdzip_core.open(data)
+                index = archive.read_text("index.md").replace("See [the guide](docs/guide.md).", "")
+                return mdzip_core.update(data, write={"index.md": index}, remove=["docs/guide.md"])
+            return mdzip_core.update(data, manifest={"title": "Second save"})
         raise AssertionError(f"unknown flow {name}")
 
     def check(self, data, flow):
-        archive = mdzip.open(data)
+        archive = mdzip_core.open(data)
         for item in self.exp["preservedManifestValues"]:
             value = archive.manifest
             for key in item["pointer"].split("/")[1:]:
                 value = value[key.replace("~1", "/").replace("~0", "~")]
             self.assertEqual(value, item["value"], f"{flow['name']}: {item['pointer']}")
+        for path in flow.get("removes", []):
+            self.assertNotIn(path, archive, f"{flow['name']}: {path} should be removed")
         for entry in self.exp["preservedEntries"]:
             if entry["path"] in flow.get("changes", []) or entry["path"] in flow.get("removes", []):
                 continue

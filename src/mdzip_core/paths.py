@@ -8,8 +8,11 @@ import unicodedata
 from typing import Iterable, Optional
 
 from .errors import (
+    ERR_DUPLICATE_PATH,
+    ERR_PATH_CONFLICT,
     ERR_PATH_CONTROL_CHAR,
     ERR_PATH_EMPTY,
+    ERR_PATH_INVALID,
     ERR_PATH_LEADING_SLASH,
     ERR_PATH_RESERVED_CHAR,
     ERR_PATH_TRAVERSAL,
@@ -71,11 +74,39 @@ def path_error(path: str) -> Optional[MdzError]:
         return MdzError(ERR_PATH_CONTROL_CHAR, f"'{path!r}' contains a control character")
     if _RESERVED.search(path):
         return MdzError(ERR_PATH_RESERVED_CHAR, f"'{path}' contains a reserved character (\\ : * ? \" < > |)")
-    segments = path.rstrip("/").split("/")
+    # A trailing "/" marks a directory entry; every segment before it must be a real name.
+    segments = (path[:-1] if path.endswith("/") else path).split("/")
     if any(s == ".." for s in segments):
         return MdzError(ERR_PATH_TRAVERSAL, f"'{path}' contains a '..' segment")
     if any(s == "" or s == "." for s in segments):
-        return MdzError(ERR_PATH_TRAVERSAL, f"'{path}' contains an empty or '.' segment")
+        return MdzError(ERR_PATH_INVALID, f"'{path}' contains an empty or '.' segment")
+    return None
+
+
+def entry_set_error(names: Iterable[str]) -> Optional[MdzError]:
+    """Why a set of entry names can't form one archive (Section 5.4), or None.
+
+    Names ending in ``/`` are directory entries. Two names equal after NFC are
+    duplicates (``ERR_DUPLICATE_PATH``); a file whose path is also a directory
+    of another entry is a conflict (``ERR_PATH_CONFLICT``).
+    """
+    files: dict = {}
+    directories: dict = {}
+    for name in names:
+        is_dir = name.endswith("/")
+        key = nfc(name[:-1] if is_dir else name)
+        if not is_dir:
+            if key in files:
+                return MdzError(ERR_DUPLICATE_PATH, f"'{name}' and '{files[key]}' are the same path (Section 5.4)")
+            files[key] = name
+        else:
+            directories.setdefault(key, name)
+        parts = key.split("/")
+        for i in range(1, len(parts)):
+            directories.setdefault("/".join(parts[:i]), name)
+    for key, name in files.items():
+        if key in directories:
+            return MdzError(ERR_PATH_CONFLICT, f"'{name}' is a file and also a directory of '{directories[key]}' (Section 5.4)")
     return None
 
 
@@ -104,6 +135,21 @@ def entry_point_error(value: object) -> Optional[str]:
     if not is_markdown(path):
         return f"entryPoint '{value}' is not a .md or .markdown file"
     return None
+
+
+def cover_error(value: object) -> Optional[str]:
+    """Why a manifest ``cover`` value isn't a valid path (Section 6.2), or None.
+
+    Same path rules as ``entryPoint`` (relative, a file, optional leading
+    ``./``), without the Markdown extension requirement.
+    """
+    if not isinstance(value, str) or value == "":
+        return "cover must be a non-empty string"
+    path = value[2:] if value.startswith("./") else value
+    if path.endswith("/"):
+        return f"cover '{value}' names a directory"
+    error = path_error(path)
+    return f"cover '{value}' is not a valid archive path ({error.message})" if error else None
 
 
 def normalize_entry_point(value: str) -> str:

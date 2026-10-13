@@ -1,5 +1,5 @@
 Status: awaiting-test
-Last:   New Python core implementing spec 1.2.0 (stdlib only, Py 3.10+); 46/46 tests incl. all spec fixtures — please review
+Last: Symlink entries kept unchanged on update (drop_special_files= to remove) per spec §4/§13.1/§14.1; 65 tests pass on 3.14 and 3.10 — not committed
 
 Owner to-do (review/commit/release steps): ../planning/owner-todo.md
 
