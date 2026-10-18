@@ -240,5 +240,48 @@ class RoundTripTest(unittest.TestCase):
                     self.check(data, flow)
 
 
+class ArchiveCasesTest(unittest.TestCase):  # T-014, T-015, T-017, P-008
+    def setUp(self):
+        self.cases = {case["id"]: case for case in load("archive-cases.json")["cases"]}
+
+    def test_symlink_entries(self):  # T-017
+        case = self.cases["symlink-entries"]
+        archive = mdzip_core.open(FIXTURES / case["archive"])
+        self.assertEqual(archive.entry_point, case["expectedEntryPoint"])
+        self.assertEqual(sorted(archive.special_files), sorted(case["symlinks"]))
+        for link in case["links"]:
+            with self.subTest(link["href"]):
+                target = archive.resolve_link(archive.entry_point, link["href"])
+                if link["expected"] == "resolved":
+                    self.assertEqual((target.kind, target.entry), ("internal", link["target"]))
+                else:
+                    # This core skips symbolic links, so "not-followed" is unresolved.
+                    self.assertEqual(target.kind, "unresolved")
+        reported = " ".join(d.message for d in archive.validate())
+        for name in case["symlinks"]:
+            self.assertIn(f"'{name}'", reported)
+
+    def test_modify_archive_with_symlinks(self):  # P-008
+        source = FIXTURES / self.cases["symlink-entries"]["archive"]
+        kept = mdzip_core.open(mdzip_core.update(source, write={"notes.md": "# Notes\n\nEdited.\n"}))
+        self.assertEqual(sorted(kept.special_files), ["escape.md", "linked", "shortcut.md"])
+        self.assertTrue(kept.validate(), "kept symbolic links must still be reported")
+        dropped = mdzip_core.open(mdzip_core.update(source, write={"notes.md": "# Notes\n"}, drop_special_files=True))
+        self.assertEqual(dropped.special_files, [])
+
+    def test_unsupported_compression(self):  # T-014
+        case = self.cases["unsupported-compression"]
+        with self.assertRaises(MdzError) as ctx:
+            mdzip_core.open(FIXTURES / case["archive"]).read_bytes("index.md")
+        self.assertEqual(ctx.exception.code, "ERR_ZIP_INVALID")
+
+    def test_project_mode(self):  # T-015
+        case = self.cases["project-mode"]
+        archive = mdzip_core.open(FIXTURES / case["archive"])
+        self.assertEqual(archive.manifest["mode"], "project")
+        self.assertEqual(archive.entry_point, case["expectedEntryPoint"])
+        self.assertEqual(sorted(archive.documents), sorted(case["documents"]))
+
+
 if __name__ == "__main__":
     unittest.main()

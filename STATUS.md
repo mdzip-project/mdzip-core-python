@@ -1,5 +1,5 @@
 Status: awaiting-test
-Last: Symlink entries kept unchanged on update (drop_special_files= to remove) per spec §4/§13.1/§14.1; 65 tests pass on 3.14 and 3.10 — not committed
+Last: Fixtures synced to released spec v1.2.0; archive-cases tests added (T-014, T-015, T-017, P-008); 69 pass on 3.14 — not committed
 
 Owner to-do (review/commit/release steps): ../planning/owner-todo.md
 
