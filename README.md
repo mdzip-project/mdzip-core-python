@@ -104,8 +104,6 @@ PYTHONPATH=src python -m unittest discover -s tests -t .
 node ../mdzip-spec/tools/sync-fixtures.mjs tests/fixtures --ref v1.2.0
 ```
 
-It's currently synced from the 1.2.0 draft (`--working-tree`); re-sync to the `v1.2.0` tag once the spec is released.
-
 ## License
 
 Apache-2.0

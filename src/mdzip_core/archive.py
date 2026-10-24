@@ -60,8 +60,12 @@ class Diagnostic:
 
 def _repair_name(info: zipfile.ZipInfo) -> str:
     """Entry name as UTF-8 (Section 4). Archives without the UTF-8 flag are
-    decoded by zipfile as CP437; many tools write UTF-8 anyway, so try that."""
-    name = info.filename
+    decoded by zipfile as CP437; many tools write UTF-8 anyway, so try that.
+
+    Uses the name as stored, not ``info.filename``: on Windows zipfile turns
+    ``\\`` into ``/`` there, and it cuts the name at a null byte, which would
+    let an invalid name through as a valid one (Sections 5.4, 13.1)."""
+    name = info.orig_filename
     if info.flag_bits & 0x800:
         return name
     try:

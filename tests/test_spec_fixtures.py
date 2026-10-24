@@ -80,6 +80,26 @@ class PathCasesTest(unittest.TestCase):
                     self.assertIsNotNone(error)
                     self.assertEqual(error.code, case["errorCode"])
 
+    def test_validation_on_open(self):
+        # The same cases through open(), with each name stored exactly as given.
+        # zipfile rewrites "\" to "/" on Windows when a ZipInfo is built, so the
+        # name is set afterwards; the archive must check the stored name.
+        for case in load("path-validation-cases.json"):
+            with self.subTest(case["name"]):
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w") as z:
+                    if case["path"] != "index.md":
+                        z.writestr("index.md", "# Index\n")
+                    info = zipfile.ZipInfo("placeholder")
+                    info.filename = case["path"]
+                    z.writestr(info, "content\n")
+                if case["valid"]:
+                    mdzip_core.open(buf.getvalue())
+                else:
+                    with self.assertRaises(MdzError) as raised:
+                        mdzip_core.open(buf.getvalue())
+                    self.assertEqual(raised.exception.code, case["errorCode"])
+
     def test_matching(self):
         for case in load("path-matching-cases.json"):
             with self.subTest(case["name"]):
