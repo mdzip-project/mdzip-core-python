@@ -7,6 +7,7 @@ import io
 import os
 import stat
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from typing import IO, Dict, List, Optional, Tuple, Union
 
@@ -98,7 +99,7 @@ class MdzArchive:
 
         self._infos: Dict[str, zipfile.ZipInfo] = {}
         self._special: Dict[str, zipfile.ZipInfo] = {}
-        self._directories: List[str] = []
+        self._directories: Dict[str, zipfile.ZipInfo] = {}
         total = 0
         # zipfile reads names from the central directory, which wins over local headers (Section 4).
         infos = self._zip.infolist()
@@ -117,7 +118,7 @@ class MdzArchive:
             if info.flag_bits & 0x1:
                 raise MdzError(ERR_ZIP_ENCRYPTED, f"entry '{info.filename}' is encrypted")
             if name.endswith("/"):
-                self._directories.append(name)
+                self._directories[name] = info
                 continue
             if info.compress_type not in _COMPRESSION_METHODS:
                 raise MdzError(ERR_ZIP_INVALID, f"entry '{name}' uses compression method {info.compress_type}; MDZip allows 0 (stored) and 8 (DEFLATE)")
@@ -202,6 +203,24 @@ class MdzArchive:
         return list(self._infos)
 
     @property
+    def directories(self) -> List[str]:
+        """Directory entries, as stored (each ends in ``/``). Not in ``files``.
+
+        Only directories the archive stores as entries, such as an empty
+        folder; a folder implied by a file path like ``docs/a.md`` is listed
+        only if the archive also has a ``docs/`` entry."""
+        return list(self._directories)
+
+    def find_directory(self, path: str) -> Optional[str]:
+        """The stored directory entry matching ``path``, with or without its
+        trailing ``/`` (NFC, case-sensitive; Section 5.4.1), or None."""
+        return find_path(self._directories, path.rstrip("/") + "/")
+
+    def _directory_info(self, path: str) -> Optional[zipfile.ZipInfo]:
+        name = self.find_directory(path)
+        return self._directories[name] if name is not None else None
+
+    @property
     def special_files(self) -> List[str]:
         """Symbolic link entries, as stored. Not in ``files``, never followed or read (Section 13.1)."""
         return list(self._special)
@@ -212,11 +231,22 @@ class MdzArchive:
         if name is None:
             return None
         info = self._special[name]
-        with self._zip.open(info) as f:
-            data = f.read(min(self.limits.max_entry_uncompressed, max(info.file_size, 0)) + 1)
-        if len(data) > info.file_size:
+        return name, info, self._read_entry(name, info)
+
+    def _read_entry(self, name: str, info: zipfile.ZipInfo) -> bytes:
+        """An entry's bytes, read no further than its declared size and the limits.
+
+        Corrupt data (a bad CRC-32, broken DEFLATE, or data that runs past the
+        declared size) is ERR_ZIP_INVALID, never zipfile's own exception."""
+        cap = min(self.limits.max_entry_uncompressed, max(info.file_size, 0)) + 1
+        try:
+            with self._zip.open(info) as f:
+                data = f.read(cap)
+        except (zipfile.BadZipFile, zlib.error, EOFError) as exc:
+            raise MdzError(ERR_ZIP_INVALID, f"'{name}' is corrupt: {exc}") from exc
+        if len(data) > info.file_size or len(data) > self.limits.max_entry_uncompressed:
             raise MdzError(ERR_LIMIT_EXCEEDED, f"'{name}' decompresses to more than its declared size")
-        return name, info, data
+        return data
 
     @property
     def documents(self) -> List[str]:
@@ -235,13 +265,7 @@ class MdzArchive:
         name = self.find(path)
         if name is None:
             raise MdzError(ERR_NOT_FOUND, f"'{path}' is not in the archive")
-        info = self._infos[name]
-        cap = min(self.limits.max_entry_uncompressed, max(info.file_size, 0)) + 1
-        with self._zip.open(info) as f:
-            data = f.read(cap)
-        if len(data) > info.file_size or len(data) > self.limits.max_entry_uncompressed:
-            raise MdzError(ERR_LIMIT_EXCEEDED, f"'{name}' decompresses to more than its declared size")
-        return data
+        return self._read_entry(name, self._infos[name])
 
     def read_text(self, path: str) -> str:
         """An entry's text, decoded as UTF-8 (Section 7.1); CRLF is left as written."""

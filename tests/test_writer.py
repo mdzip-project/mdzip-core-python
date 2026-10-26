@@ -226,5 +226,38 @@ class SymlinkUpdateTest(unittest.TestCase):  # Sections 4, 13.1, 14.1
         self.assertEqual(mdzip_core.open(data).entry_point, "index.md")
 
 
+class DirectoryEntryTest(unittest.TestCase):  # Sections 5.4, 14.1
+    SOURCE = raw_zip({
+        "index.md": "# Guide\n",
+        "empty/": b"",
+        "docs/": b"",
+        "docs/a.md": "# A\n",
+        "data/blob.bin": bytes(range(256)),
+    })
+
+    def test_listed_separately_from_files(self):
+        archive = mdzip_core.open(self.SOURCE)
+        self.assertEqual(sorted(archive.directories), ["docs/", "empty/"])
+        self.assertNotIn("empty/", archive.files)
+        self.assertEqual(archive.find_directory("empty"), "empty/")
+        self.assertEqual(archive.find_directory("docs/"), "docs/")
+        self.assertIsNone(archive.find_directory("data"))  # implied by a file path, not stored
+        self.assertIsNone(archive.find_directory("Empty"))  # case-sensitive
+
+    def test_update_keeps_directories_and_binary_entries(self):
+        before = mdzip_core.open(self.SOURCE)
+        data = self.SOURCE
+        for _ in range(2):  # two saves, since one can hide a second that drops data
+            data = mdzip_core.update(data, write={"index.md": "# Guide\n\nEdited.\n"}, when=WHEN)
+        after = mdzip_core.open(data)
+        self.assertEqual(sorted(after.directories), ["docs/", "empty/"])
+        self.assertEqual(after.read_bytes("data/blob.bin"), before.read_bytes("data/blob.bin"))
+        self.assertEqual(after.read_text("docs/a.md"), "# A\n")
+
+    def test_remove_drops_a_directory(self):
+        after = mdzip_core.open(mdzip_core.update(self.SOURCE, remove=["empty"], when=WHEN))
+        self.assertEqual(after.directories, ["docs/"])
+
+
 if __name__ == "__main__":
     unittest.main()

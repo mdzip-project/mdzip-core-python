@@ -32,6 +32,9 @@ Opening an archive is safe for untrusted input:
 - It rejects a `spec.version` from a newer major version, and unrecognized `mode` values.
 - `mdzip_core.Limits` caps entry count, total and per-entry size, and compression ratio. Sizes are checked against the ZIP directory, then again while reading, since declared sizes can lie.
 - Symbolic links are never followed or read. They're listed in `archive.special_files` (not in `files`), with a warning.
+- Corrupt entry data (a bad checksum, broken compression, or data longer than declared) fails the read with `ERR_ZIP_INVALID` or `ERR_LIMIT_EXCEEDED`.
+
+`archive.files` lists file entries. Directory entries the archive stores, such as an empty folder, are in `archive.directories` (each ends in `/`); `archive.find_directory("docs")` finds one with or without the slash.
 
 Path lookups follow the spec's matching rule: case-sensitive, after NFC normalization. So `café.md` stored either way is found, and `Index.md` doesn't match `index.md`.
 
@@ -67,6 +70,7 @@ data = mdzip_core.update(
 
 - Entries you don't touch are kept byte for byte, with their timestamps and compression method.
 - Unknown manifest fields are kept, at every level.
+- Directory entries are kept, including empty folders. Name one in `remove=` to drop it.
 - Symbolic link entries are kept unchanged too, so the archive stays non-conforming and the warning from opening it still applies. Pass `drop_special_files=True` or name them in `remove=` once the user agrees to remove them.
 - A manifest is added if the archive has none.
 - The entry point must resolve to the same file afterwards. Pass `entry_point=` to change it on purpose; otherwise the update fails with `ERR_ENTRYPOINT_CHANGED`.
@@ -90,7 +94,21 @@ The host's folder is the trust boundary (spec Section 9.6): targets outside it a
 
 ## Errors
 
-Failures raise `mdzip_core.MdzError` with a stable `code`. Codes follow the spec's suggested categories (Section 16.5), for example `ERR_ENTRYPOINT_INVALID`, `ERR_ENTRYPOINT_MISSING`, `ERR_DUPLICATE_PATH` and `ERR_ZIP_ENCRYPTED`, plus a few specific to this library (`ERR_LIMIT_EXCEEDED`, `ERR_ENTRYPOINT_CHANGED`, `ERR_NOT_FOUND`).
+Failures raise `mdzip_core.MdzError` with a stable `code`. Codes follow the spec's suggested categories (Section 16.5), for example `ERR_ENTRYPOINT_INVALID`, `ERR_ENTRYPOINT_MISSING`, `ERR_DUPLICATE_PATH` and `ERR_ZIP_ENCRYPTED`, plus `ERR_LIMIT_EXCEEDED` (in the spec's list since 1.2.1) and a few specific to this library (`ERR_ENTRYPOINT_CHANGED`, `ERR_NOT_FOUND`).
+
+## Core contract
+
+How this library covers the required operations in the MDZip [core library contract](https://github.com/mdzip-project/.github/blob/main/docs/core-contract.md):
+
+| Contract | Python |
+|---|---|
+| R1 open/read | `mdzip_core.open` / `MdzArchive.open` (path, bytes or file object) |
+| R2 entries and metadata | `files`, `directories`, `special_files`, `find`, `find_directory`, `in`, `info`, `read_bytes`, `read_text`, `manifest`, `entry_point`, `mode` |
+| R3 links | `resolve_link` |
+| R4 validation and errors | `validate()` diagnostics; `MdzError.code`; open-time rejections |
+| R5 creation | `create`, `create_from_directory` |
+| R6 modification | `update(write=, remove=, manifest=, entry_point=)` |
+| R7 safety | Path, duplicate, symlink and link rules on open; `Limits` (built-in defaults, configurable) |
 
 ## Development
 
@@ -101,7 +119,7 @@ PYTHONPATH=src python -m unittest discover -s tests -t .
 `tests/fixtures/` is a copy of the spec's shared fixtures, made with the spec's sync tool and checked by `SPEC-FIXTURES.json`. Don't edit it by hand. To refresh it:
 
 ```sh
-node ../mdzip-spec/tools/sync-fixtures.mjs tests/fixtures --ref v1.2.0
+node ../mdzip-spec/tools/sync-fixtures.mjs tests/fixtures --ref v1.2.1
 ```
 
 ## License

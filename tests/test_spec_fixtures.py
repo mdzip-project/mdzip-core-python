@@ -303,5 +303,42 @@ class ArchiveCasesTest(unittest.TestCase):  # T-014, T-015, T-017, P-008
         self.assertEqual(sorted(archive.documents), sorted(case["documents"]))
 
 
+class ResourceLimitCasesTest(unittest.TestCase):  # T-018
+    STABLE = {"ERR_ZIP_INVALID", "ERR_LIMIT_EXCEEDED"}
+
+    def setUp(self):
+        data = load("resource-limit-cases.json")
+        self.cases = {case["id"]: case for case in data["cases"]}
+        ref = data["referenceLimits"]
+        limits = mdzip_core.DEFAULT_LIMITS
+        # The cases apply only if the defaults are no looser than the reference limits.
+        self.assertLessEqual(limits.max_entry_uncompressed, ref["maxEntryUncompressedBytes"])
+        self.assertLessEqual(limits.max_total_uncompressed, ref["maxTotalUncompressedBytes"])
+        self.assertLessEqual(limits.max_compression_ratio, ref["maxCompressionRatio"])
+        self.assertLessEqual(limits.max_entries, ref["maxEntries"])
+
+    def open_and_read(self, case):
+        """Open the archive and read the hostile entry; return the MdzError raised."""
+        with self.assertRaises(MdzError) as ctx:
+            archive = mdzip_core.open(FIXTURES / case["archive"])
+            self.assertTrue(archive.read_text("index.md"))  # ordinary entries stay readable
+            archive.read_bytes(case["entry"])
+        self.assertIn(ctx.exception.code, self.STABLE)
+        return ctx.exception
+
+    def test_forged_size(self):
+        self.open_and_read(self.cases["limit-forged-size"])
+
+    def test_high_ratio(self):
+        error = self.open_and_read(self.cases["limit-high-ratio"])
+        self.assertEqual(error.code, "ERR_LIMIT_EXCEEDED")
+
+    def test_overlapping_entries(self):
+        case = self.cases["limit-overlapping-entries"]
+        with self.assertRaises(MdzError) as ctx:
+            mdzip_core.open(FIXTURES / case["archive"])
+        self.assertIn(ctx.exception.code, self.STABLE)
+
+
 if __name__ == "__main__":
     unittest.main()

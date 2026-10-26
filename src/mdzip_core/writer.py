@@ -210,6 +210,8 @@ def update(
 
     - Entries not in ``write`` or ``remove`` are kept byte-for-byte, with
       their original timestamps and compression method.
+    - Directory entries (``MdzArchive.directories``), such as empty folders,
+      are kept too; name one in ``remove`` to drop it.
     - Symbolic link entries (``MdzArchive.special_files``) are kept the same
       way, so the archive stays non-conforming (Section 4) and the warning
       from opening it still applies. Pass ``drop_special_files=True``, or
@@ -238,6 +240,8 @@ def update(
             special = archive._special_entry(path)
             stored = special[0] if special else None
         if stored is None:
+            stored = archive.find_directory(path)
+        if stored is None:
             raise MdzError("ERR_NOT_FOUND", f"'{path}' is not in the archive")
         removals.add(nfc(stored))
 
@@ -254,6 +258,10 @@ def update(
             replaced.add(key)
         else:
             entries.append((stored, info, archive.read_bytes(stored)))
+    # Directory entries (an empty folder, for example) are kept like files (Section 14.1).
+    for stored in archive.directories:
+        if nfc(stored) not in removals:
+            entries.append((stored, archive._directory_info(stored), b""))
     kept_special = set()
     if not drop_special_files:
         for stored in archive.special_files:
@@ -282,7 +290,8 @@ def update(
         new_manifest["entryPoint"] = entry_point
     set_modified(new_manifest, iso)
 
-    paths = [p for p, _, _ in entries if p not in kept_special]  # links are never documents
+    # Links and directories are never documents.
+    paths = [p for p, _, _ in entries if p not in kept_special and not p.endswith("/")]
     try:
         after = resolve_entry_point(paths, new_manifest)
     except MdzError as exc:
